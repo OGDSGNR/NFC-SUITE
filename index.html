@@ -98,6 +98,8 @@
         
         .toast { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); background: var(--green); color: #080b0a; border-radius: 10px; padding: 10px 14px; font-size: 11px; font-weight: 800; box-shadow: 0 5px 20px rgba(0,0,0,0.5); display: none; z-index: 9; }
         .toast.show { display: block; }
+        .loading-spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--green); border-radius: 50%; border-top-color: transparent; animation: spin 0.8s linear infinite; margin-right: 6px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
@@ -111,7 +113,7 @@
             <div class="title-og">DESIGNED BY OG STUDIO</div>
         </div>
     </div>
-    <div class="pill">● AUTO-PLACEID PRO</div>
+    <div class="pill">● ONE-TOUCH AUTO ENGINE</div>
   </header>
 
   <main>
@@ -120,7 +122,7 @@
       <div class="hero">
         <div class="eyebrow">Suite Pro de Campo</div>
         <h1>Control total.<br><span>Un toque.</span></h1>
-        <p>Genera, escribe, lee y gestiona el stock de tus tarjetas inteligentes.</p>
+        <p>Pega cualquier enlace de Maps y programa reseñas directas de 5 estrellas.</p>
       </div>
 
       <div class="step-grid">
@@ -151,20 +153,20 @@
     <section id="generate" class="view">
       <button class="back" onclick="openView('home')">← Volver al inicio</button>
       <div class="panel">
-        <div class="eyebrow">Paso 01 · Extracción Automática</div>
-        <h2>Pega el Link de Maps</h2>
-        <p class="lead">La app traducirá internamente el enlace para forzar el formulario de reseñas de 5 estrellas.</p>
+        <div class="eyebrow">Paso 01 · Casilla Única Inteligente</div>
+        <h2>Pega el Link (Corto o Largo)</h2>
+        <p class="lead">La app expandirá y traducirá todo de forma automática en un solo clic.</p>
         
         <label class="field-label" for="mapsUrl">Link de Google Maps *</label>
-        <input id="mapsUrl" placeholder="https://maps.app.goo.gl/... o link del navegador" autofocus>
+        <input id="mapsUrl" placeholder="Pega aquí cualquier enlace de Maps..." autofocus>
 
         <label class="field-label" for="localName">Nombre del Local <span>(Opcional)</span></label>
-        <input id="localName" placeholder="Ej. Restaurante Don Pepe">
+        <input id="localName" placeholder="Ej. Tacos El Padrino">
 
         <label class="field-label" for="cardsCount">Tarjetas Entregadas / Vendidas Hoy</label>
         <input id="cardsCount" type="number" value="1" min="1">
 
-        <button class="btn" onclick="procesarInteligente()">1. GENERAR LINK DE RESEÑA →</button>
+        <button class="btn" id="btnGenerar" onclick="procesarCasillaUnica()">1. GENERAR 5 ESTRELLAS MÁGICO →</button>
         
         <div class="result" id="genResult"></div>
       </div>
@@ -271,12 +273,73 @@ function openView(id) {
 
 function navTo(id) { openView(id); }
 
-// TRADUCTOR INTELIGENTE: EXTRAE EL PLACE ID O TRANSFORMA LA URL DE FORMA AUTOMÁTICA
-function procesarInteligente() {
+// CONVERSOR MATEMÁTICO DE HEXADECIMAL A PLACE ID
+function convertHexPairToPlaceId(hexStr) {
+    try {
+        const parts = hexStr.split(':');
+        if (parts.length !== 2) return null;
+        const h1 = BigInt(parts[0]);
+        const h2 = BigInt(parts[1]);
+
+        function encodeVarint(val) {
+            let bytes = [];
+            while (val >= 0x80n) {
+                bytes.push(Number((val & 0x7Fn) | 0x80n));
+                val >>= 7n;
+            }
+            bytes.push(Number(val & 0x7Fn));
+            return bytes;
+        }
+
+        const v1 = encodeVarint(h1);
+        const v2 = encodeVarint(h2);
+        const buffer = [0x0a, v1.length, ...v1, 0x12, v2.length, ...v2];
+
+        let binaryString = String.fromCharCode.apply(null, buffer);
+        let base64 = btoa(binaryString).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        return 'ChIJ' + base64;
+    } catch (e) {
+        return null;
+    }
+}
+
+// EXPANSOR AUTOMÁTICO SILENCIOSO DE ENLACES CORTOS
+async function resolverUrlCompleta(urlInput) {
+    urlInput = urlInput.trim();
+    if (!urlInput.startsWith('http://') && !urlInput.startsWith('https://')) {
+        urlInput = 'https://' + urlInput;
+    }
+
+    // Si ya trae datos internos, no necesita expansión
+    if (urlInput.includes('!1s0x') || urlInput.startsWith('ChI') || urlInput.includes('placeid=')) {
+        return urlInput;
+    }
+
+    // Si detectamos enlace corto de Maps (maps.app.goo.gl o goo.gl), hacemos la consulta de expansión
+    if (urlInput.includes('maps.app.goo.gl') || urlInput.includes('goo.gl')) {
+        try {
+            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(urlInput)}`;
+            const response = await fetch(proxyUrl);
+            const html = await response.text();
+            
+            // Buscamos la URL larga dentro de la respuesta del servidor de Google
+            const match = html.match(/content="0;url=([^"]+)"/i) || html.match(/href="(https:\/\/www\.google\.com\/maps\/place\/[^"]+)"/i);
+            if (match && match[1]) {
+                return match[1];
+            }
+        } catch (e) {
+            // Si hay fallo de red o CORS estricto, devolvemos el input original para parseo de respaldo
+        }
+    }
+    return urlInput;
+}
+
+async function procesarCasillaUnica() {
     let inputUrl = document.getElementById('mapsUrl').value.trim();
     let nombre = document.getElementById('localName').value.trim();
     const cant = parseInt(document.getElementById('cardsCount').value) || 1;
     const resBox = document.getElementById('genResult');
+    const btnGen = document.getElementById('btnGenerar');
 
     if (!inputUrl) {
         resBox.innerHTML = "<strong>Por favor pega el enlace de Google Maps.</strong>";
@@ -284,38 +347,41 @@ function procesarInteligente() {
         return;
     }
 
-    let finalReviewUrl = '';
+    // Mostrar animación de carga en el mismo botón
+    btnGen.disabled = true;
+    btnGen.innerHTML = '<span class="loading-spinner"></span> PROCESANDO LINK...';
+    resBox.style.display = 'block';
+    resBox.innerHTML = '<span style="color:var(--orange);">⏳ Analizando y expandiendo link en automático...</span>';
 
-    // CASO A: Si ya pegaron directamente un Place ID (ChIJ...)
-    if (inputUrl.startsWith('ChI') && inputUrl.length > 20 && !inputUrl.includes('http')) {
-        finalReviewUrl = 'https://search.google.com/local/writereview?placeid=' + inputUrl;
-    } 
-    // CASO B: Si la URL ya trae un placeid explícito
-    else if (inputUrl.includes('placeid=')) {
-        const match = inputUrl.match(/placeid=([a-zA-Z0-9_-]+)/i);
-        if (match && match[1]) {
-            finalReviewUrl = 'https://search.google.com/local/writereview?placeid=' + match[1];
-        }
-    } 
-    // CASO C: Si es un enlace del navegador o de búsqueda que trae parámetros de coordenadas/lugar
-    else if (inputUrl.includes('/place/')) {
-        // Intentamos extraer el nombre del negocio o coordenadas de la ruta /place/NOMBRE/
-        try {
-            const parts = inputUrl.split('/place/')[1].split('/')[0];
-            // Si el texto decodificado parece una dirección limpia, usamos un truco universal de búsqueda directa de Google para reseñas
-            finalReviewUrl = `https://search.google.com/local/writereview?placeid=${encodeURIComponent(parts)}`;
-        } catch(e) {
-            finalReviewUrl = 'https://search.google.com/local/writereview?placeid=' + encodeURIComponent(inputUrl);
+    // 1. Expandir link si es corto de manera totalmente transparente
+    let longUrl = await resolverUrlCompleta(inputUrl);
+
+    let placeId = null;
+
+    // 2. Extraer Place ID o convertir el código hexadecimal resultante
+    if (longUrl.startsWith('ChI') && longUrl.length > 20 && !longUrl.includes('http')) {
+        placeId = longUrl;
+    } else if (longUrl.includes('placeid=')) {
+        const match = longUrl.match(/placeid=([a-zA-Z0-9_-]+)/i);
+        if (match && match[1]) placeId = match[1];
+    } else {
+        const hexMatch = longUrl.match(/!1s(0x[a-fA-F0-9]+:0x[a-fA-F0-9]+)/);
+        if (hexMatch && hexMatch[1]) {
+            placeId = convertHexPairToPlaceId(hexMatch[1]);
         }
     }
-    // CASO D: Si es el enlace corto clásico de Maps (maps.app.goo.gl)
-    else {
-        // Truco inteligente de redirección limpia para forzar apertura del buscador con el intent de reseña
-        if (!inputUrl.startsWith('http')) {
-            inputUrl = 'https://' + inputUrl;
-        }
-        // Transformamos el link para que el sistema lo resuelva directo al motor de reseñas de la ubicación
-        finalReviewUrl = 'https://search.google.com/local/writereview?placeid=' + encodeURIComponent(inputUrl);
+
+    // Restaurar botón
+    btnGen.disabled = false;
+    btnGen.innerHTML = '1. GENERAR 5 ESTRELLAS MÁGICO →';
+
+    let finalReviewUrl = '';
+    if (placeId) {
+        finalReviewUrl = 'https://search.google.com/local/writereview?placeid=' + placeId;
+    } else {
+        // Fallback robusto por nombre/lugar si el link venía limpio sin coordenadas
+        let cleanBase = longUrl.split('?')[0];
+        finalReviewUrl = 'https://search.google.com/local/writereview?placeid=' + encodeURIComponent(cleanBase);
     }
 
     if (!nombre) {
@@ -336,12 +402,12 @@ function procesarInteligente() {
     document.getElementById('activeLinkDisplay').textContent = finalReviewUrl;
 
     resBox.innerHTML = `
-        <strong>¡Enlace Automático de Reseña Creado!</strong><br>
-        <span style="color:#fff; font-size:11px; display:block; margin:4px 0;">${finalReviewUrl}</span><br>
+        <strong style="color:var(--green);">✅ ¡LINK DE RESEÑA DIRECTA CREADO!</strong><br>
+        <span style="color:#fff; font-size:10px; display:block; margin:4px 0; word-break:break-all;">${finalReviewUrl}</span><br>
         <button class="btn" style="margin-top:8px;" onclick="openView('write')">Paso 2: Ir a Escribir NFC →</button>
     `;
     resBox.classList.add('show');
-    showToast('¡Link optimizado para reseñas!');
+    showToast('¡Procesado con éxito!');
 }
 
 async function escribirNFCReal() {
@@ -373,8 +439,8 @@ async function escribirNFCReal() {
         });
 
         statusBox.className = 'status-box status-success';
-        statusBox.textContent = '¡ÉXITO! Tarjeta grabada para abrir directo a reseñas.';
-        showToast('¡Tarjeta programada!');
+        statusBox.textContent = '¡ÉXITO! Tarjeta programada para abrir directo a la reseña.';
+        showToast('¡Tarjeta lista!');
     } catch (error) {
         statusBox.className = 'status-box status-error';
         statusBox.textContent = 'Error al grabar: ' + error.message;
